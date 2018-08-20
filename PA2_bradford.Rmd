@@ -15,14 +15,12 @@ output:
 
 
 
-```{r load packages, echo=TRUE, message=FALSE, warning=FALSE}
-#library(ggplot2)
-#library(dplyr)
-#library(plyr)
-#library(data.table)
-#library(grid)
-#library(gridExtra)
-#library(lubridate)
+```{r load packages}
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(data.table)
+library(grid)
 ```
 
 ## Data Processing
@@ -31,7 +29,7 @@ First, read in the US NOAA storm database located here:  https://d396qusza40orc.
 
 Then unzip the .csv into the working /data directory and read into the storms data frame.
 
-```{r load data message=FALSE, warning=FALSE, echo=TRUE}
+```{r load data}
 # set working & create data directory
 setwd("C:\\Users\\dabradford\\Desktop\\Coursera\\DataSci\\Reproducible\\RepData_PeerAssessment2")
 if(!file.exists("./data")){dir.create("./data")}
@@ -50,18 +48,138 @@ if(!file.exists(zipfile.data)) {
 path_act <- file.path("./data" , "./data/storm_data")
 files<-list.files(path_act, recursive=TRUE)
 
-# Read data file
-storms <- read.csv("./data/storm_data.csv.bz2")
-
+# Read data file > THIS WILL TAKE A WHILE
+#storms_raw <- read.csv("./data/storm_data.csv.bz2")
 
 # inspect data file
-str(storms)
-summary(storms)
+str(storms_raw)
+summary(storms_raw)
 ```
+
+This analysis specifically asks for the effects of storm events across the United States.  For this analysis we will not be considering geographical boundaries, such as county or state borders, and will include all geolocations included in the dataset.  Additionally, we will only be looking at the last ten years of data for our analysis to account for more recent trends and to ensure we are working with more accurate data points.  
+
+Filter data to only include events from November 2001 through November 2011 based on the __BGN_DATE__ variable.
+
+```{r}
+# First convert BGN_DATE to date 
+storms_raw$BGN_DATE <- as.Date(storms_raw$BGN_DATE, "%m/%d/%Y")
+
+# Then parse only those events between Nov 2001 and Nov 2011 to get the last ten years of data.  Also only include the variables that will help us understand consequences to population health (FATALITIES & INJURIES) and/or economics (PROPDMG &  CROPDMG)
+
+storms_10yr  <- storms_raw %>%
+    
+    filter(BGN_DATE >= "2001-11-01" & BGN_DATE <= "2011-11-30")
+```
+
+We need to understand the dataset better since there isn't clear documentation of what some of the variable contents signify.  Let's view a few events in Georgia
+
+```{r}
+# view one event to determine variable meanings
+ga_events  <- storms_raw %>%
+    select(BGN_DATE, STATE, EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP) %>%
+    filter(BGN_DATE == "2007-03-01" & EVTYPE == "TORNADO" & STATE == "GA")
+
+head(ga_events)
+```
+
+Based on this analysis and comparing to the NOAA Storm Events database search page at the link below we understand the following:
+
+__FATALITIES__ - Number of people killed as a direct result of the event
+__INJURIES__ - Number of people injured as a direct result of the event
+
+__Property damage__ is found by combining PROPDMG and PROPDMGEXP variables.  Possible values for PROPDMGEXP include:
+
+<blank> - no damage
+0 - no damage
+B - damage in billions USD.  For example, if PROPDMG = 5, and PROPDMG = 'B' then property damage is $5,000,000,000
+K - damage in thousands USD
+M - damage in millions USD
+
+__Crop damage__ is calculated in the same way.
+
+https://www.ncdc.noaa.gov/stormevents/choosedates.jsp?statefips=-999%2CALL
+
+```{r}
+count(storms_10yr, 'PROPDMGEXP')
+count(storms_10yr, 'CROPDMGEXP')
+```
+ 
+Therefore we need to add to new variables to account for property and crop damage.
+
+```{r}
+# Property damage
+storms_10yr <- mutate(storms_10yr,
+                      prop.dmg = ifelse(PROPDMGEXP == "K", PROPDMG * 1000,
+                                        ifelse(PROPDMGEXP == "M", PROPDMG * 1000000,
+                                               ifelse(PROPDMGEXP == "B", PROPDMG * 1000000000, 0))))
+# Crop damage
+storms_10yr <- mutate(storms_10yr,
+                      crop.dmg = ifelse(CROPDMGEXP == "K", CROPDMG * 1000,
+                                        ifelse(CROPDMGEXP == "M", CROPDMG * 1000000,
+                                               ifelse(CROPDMGEXP == "B", CROPDMG * 1000000000, 0))))
+```
+
+Since there are 128 event types we wanted to plot the top 20 and categorize all other events as "OTHER".
+
+```{r}
+top10fatalities <- data.table(storms_10yr)
+top10fatalities <- top10fatalities[FATALITIES != 0 & !is.na(FATALITIES), sum(FATALITIES), by = EVTYPE]
+
+top10fatalities <- top10fatalities[order(-rank(V1), EVTYPE)[21:nrow(top10fatalities)],EVTYPE:="OTHER*"]
+top10fatalities <- top10fatalities[, sum(V1), by = EVTYPE]
+top10fatalities$EVTYPE <- factor(top10fatalities$EVTYPE, levels = top10fatalities$EVTYPE[order(top10fatalities$V1)])
+
+
+top10injuries <- data.table(storms_10yr)
+top10injuries <- top10injuries[INJURIES != 0 & !is.na(INJURIES), sum(INJURIES), by = EVTYPE]
+
+top10injuries <- top10injuries[order(-rank(V1), EVTYPE)[21:nrow(top10injuries)],EVTYPE:="OTHER*"]
+top10injuries <- top10injuries[, sum(V1), by = EVTYPE]
+top10injuries$EVTYPE <- factor(top10injuries$EVTYPE, levels = top10injuries$EVTYPE[order(top10injuries$V1)])
+```
+
+
 
 ## Results
 
 ### Q1 - Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+```{r}
+
+# create png device
+png("plot1.png", width=960, height=480, units="px", bg="transparent")
+
+plot1 <- ggplot(top10fatalities, aes(x=EVTYPE, y=V1)) + 
+    geom_bar(stat="identity", fill="blue") +
+    labs(x="Event Type", y="# Fatalities", title="# Fatalities by Event Type (Top 20)") +
+    theme_minimal() +
+    coord_flip() + 
+    geom_text(aes(label=V1), size=4, position=position_dodge(width=1), hjust=-.5) +
+    scale_y_continuous(breaks = seq(min(0), max(1500), by = 200)) 
+
+# turn off device to ensure writing completes
+dev.off()
+
+plot1
+```
+
+```{r}
+# create png device
+png("plot2.png", width=960, height=480, units="px", bg="transparent")
+
+plot2 <- ggplot(top10injuries, aes(x=EVTYPE, y=V1)) + 
+    geom_bar(stat="identity", fill="blue") +
+    labs(x="Event Type", y="# Injuries", title="# Injuries by Event Type (Top 20)") +
+    theme_minimal() +
+    coord_flip() + 
+    geom_text(aes(label=V1), size=4, position=position_dodge(width=1), hjust=-.5) +
+    scale_y_continuous(breaks = seq(min(0), max(1500), by = 200)) 
+
+# turn off device to ensure writing completes
+dev.off()
+
+plot2
+```
 
 
 
